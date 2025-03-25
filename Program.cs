@@ -9,6 +9,9 @@ using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using vjp_api.Models;
 using System.Security.Claims;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
+using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -65,6 +68,18 @@ builder.Services
             }
         };
     });
+
+builder.Services.Configure<KestrelServerOptions>(options =>
+{
+    options.Limits.MaxRequestBodySize = 20 * 1024 * 1024; // 20MB
+});
+
+builder.Services.Configure<FormOptions>(options =>
+{
+    options.ValueLengthLimit = int.MaxValue;
+    options.MultipartBodyLengthLimit = int.MaxValue;
+    options.MultipartHeadersLengthLimit = int.MaxValue;
+});
 
 builder.Services.Configure<IdentityOptions>(options =>
 {
@@ -131,6 +146,8 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseStaticFiles(); // Thêm dòng này để phục vụ file tĩnh
+
 // 🔹 Debug middleware để kiểm tra routes
 app.Use(async (context, next) =>
 {
@@ -139,6 +156,25 @@ app.Use(async (context, next) =>
     logger.LogInformation($"Request Method: {context.Request.Method}");
     logger.LogInformation($"Route Values: {string.Join(", ", context.Request.RouteValues)}");
     await next();
+});
+
+// Cấu hình để phục vụ thư mục uploads
+var uploadsDir = Path.Combine(app.Environment.ContentRootPath, "uploads");
+if (!Directory.Exists(uploadsDir))
+{
+    Directory.CreateDirectory(uploadsDir);
+}
+
+var imagesDir = Path.Combine(uploadsDir, "images");
+if (!Directory.Exists(imagesDir))
+{
+    Directory.CreateDirectory(imagesDir);
+}
+
+app.UseStaticFiles(new StaticFileOptions
+{
+    FileProvider = new PhysicalFileProvider(uploadsDir),
+    RequestPath = "/uploads"
 });
 
 // 🔹 Configure middleware pipeline

@@ -25,4 +25,7 @@ public class ChatMessage
     
     public DateTime SentAt { get; set; } = DateTime.Now;
     public bool IsRead { get; set; } = false;
+    
+    public string? ImageUrl { get; set; }
+    public string Type { get; set; } = "text"; // "text" hoặc "image"
 }

@@ -1,12 +1,10 @@
 using vjp_api.Models;
-
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using vjp_api.Data;
 using Microsoft.AspNetCore.SignalR;
-using Microsoft.Extensions.Caching.Memory; // Thêm namespace này
 using Microsoft.Extensions.Logging;
-using vjp_api.Dtos; // Thêm namespace này
+using System.Text.RegularExpressions;
 
 namespace vjp_api.Controllers
 {
@@ -16,25 +14,21 @@ namespace vjp_api.Controllers
     {
         private readonly ApplicationDbContext _context;
         private readonly IHubContext<ChatHub> _hubContext;
-        private readonly IMemoryCache _cache;
-        private readonly ILogger<ChatController> _logger; // Thêm biến này
+        private readonly ILogger<ChatController> _logger;
 
         public ChatController(
             ApplicationDbContext context, 
             IHubContext<ChatHub> hubContext,
-            IMemoryCache cache,
-            ILogger<ChatController> logger) // Thêm tham số này
+            ILogger<ChatController> logger)
         {
             _context = context;
             _hubContext = hubContext;
-            _cache = cache;
-            _logger = logger; // Khởi tạo biến
+            _logger = logger;
         }
 
-        // Gửi tin nhắn cá nhân
-        // Trong ChatController.cs
+        // Gửi tin nhắn cá nhân (văn bản hoặc hình ảnh)
         [HttpPost("send")]
-        public async Task<IActionResult> SendMessage([FromBody] ChatMessageDto dto)
+        public async Task<IActionResult> SendMessage([FromBody] dynamic dto)
         {
             try
             {
@@ -45,49 +39,76 @@ namespace vjp_api.Controllers
                     return Unauthorized("User not authenticated");
                 }
                 
-                // Log dữ liệu nhận được
-                _logger.LogInformation($"Received message request with Content={dto.Content}, ReceiverId={dto.ReceiverId}");
+                // Chuyển dynamic thành Dictionary để dễ truy cập
+                var data = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(dto.ToString());
+                
+                // Kiểm tra các trường bắt buộc
+                if (!data.ContainsKey("receiverId") || string.IsNullOrEmpty(data["receiverId"].ToString()))
+                {
+                    return BadRequest("ReceiverId is required");
+                }
+                
+                if (!data.ContainsKey("content") || string.IsNullOrEmpty(data["content"].ToString()))
+                {
+                    return BadRequest("Content is required");
+                }
+                
+                string receiverId = data["receiverId"].ToString();
+                string content = data["content"].ToString();
+                // bool isRead = data.ContainsKey("isRead") && bool.TryParse(data["isRead"].ToString(), out bool isReadValue) ? isReadValue : false;
+                
+                // Xác định loại tin nhắn (text hoặc image)
+                string type = "text";
+                string imageUrl = null;
+                
+                // Kiểm tra nếu content bắt đầu bằng "data:image" thì đây là tin nhắn hình ảnh
+                if (content.StartsWith("data:image"))
+                {
+                    type = "image";
+                    imageUrl = content;
+                    content = "[Image]"; // Đặt nội dung mặc định cho tin nhắn hình ảnh
+                }
                 
                 // Kiểm tra người nhận có tồn tại
-                if (string.IsNullOrEmpty(dto.ReceiverId) || await _context.Users.FindAsync(dto.ReceiverId) == null)
+                if (await _context.Users.FindAsync(receiverId) == null)
+                {
                     return NotFound("Không tìm thấy người nhận");
+                }
                 
-                // Kiểm tra nội dung tin nhắn
-                if (string.IsNullOrEmpty(dto.Content))
-                    return BadRequest("Nội dung tin nhắn không được để trống");
-                
-                // Tạo đối tượng ChatMessage từ DTO
-                var model = new ChatMessage
+                // Tạo đối tượng ChatMessage
+                var message = new ChatMessage
                 {
                     SenderId = senderId,
-                    ReceiverId = dto.ReceiverId,
-                    Content = dto.Content,
-                    IsRead = dto.IsRead,
-                    SentAt = DateTime.Now
+                    ReceiverId = receiverId,
+                    Content = content,
+                    IsRead = false,
+                    SentAt = DateTime.Now,
+                    Type = type,
+                    ImageUrl = imageUrl
                 };
                 
                 // Thêm vào cơ sở dữ liệu
-                _context.ChatMessages.Add(model);
+                _context.ChatMessages.Add(message);
                 await _context.SaveChangesAsync();
                 
-                // Tạo đối tượng đơn giản để gửi qua SignalR
+                // Tạo đối tượng để gửi qua SignalR
                 var messageToSend = new
                 {
-                    id = model.Id,
-                    senderId = model.SenderId,
-                    receiverId = model.ReceiverId,
-                    content = model.Content,
-                    sentAt = model.SentAt,
-                    isRead = model.IsRead
+                    id = message.Id,
+                    senderId = message.SenderId,
+                    receiverId = message.ReceiverId,
+                    content = message.Content,
+                    sentAt = message.SentAt,
+                    isRead = message.IsRead,
+                    type = message.Type,
+                    imageUrl = message.ImageUrl
                 };
                 
-                // Gửi tin nhắn qua SignalR đến người nhận
-                await _hubContext.Clients.Group(model.ReceiverId).SendAsync("ReceiveMessage", messageToSend);
-                
-                // Gửi tin nhắn qua SignalR đến người gửi (để đồng bộ trên tất cả thiết bị)
+                // Gửi tin nhắn qua SignalR
+                await _hubContext.Clients.Group(message.ReceiverId).SendAsync("ReceiveMessage", messageToSend);
                 await _hubContext.Clients.Group(senderId).SendAsync("ReceiveMessage", messageToSend);
                 
-                return Ok(new { message = "Gửi tin nhắn thành công!", id = model.Id });
+                return Ok(new { message = "Gửi tin nhắn thành công!", id = message.Id });
             }
             catch (Exception ex)
             {
@@ -102,13 +123,6 @@ namespace vjp_api.Controllers
         {
             var userIdCurrent = User.Identity.Name;
 
-            // Thêm caching để tăng hiệu suất
-            // var cacheKey = $"chat_history_{userIdCurrent}_{userId}_{page}_{pageSize}";
-            // if (_cache.TryGetValue(cacheKey, out List<ChatMessage> cachedMessages))
-            // {
-            //     return Ok(cachedMessages);
-            // }
-
             var messages = await _context.ChatMessages
                 .Where(m => (m.SenderId == userIdCurrent && m.ReceiverId == userId) ||
                             (m.SenderId == userId && m.ReceiverId == userIdCurrent))
@@ -116,9 +130,6 @@ namespace vjp_api.Controllers
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
-
-            // Lưu vào cache trong 1 phút
-            // _cache.Set(cacheKey, messages, TimeSpan.FromMinutes(1));
 
             return Ok(messages);
         }
@@ -135,7 +146,6 @@ namespace vjp_api.Controllers
             return Ok();
         }
         
-        // Trong ChatController.cs
         [HttpGet("history/{userId}/latest")]
         public async Task<IActionResult> GetLatestMessages(string userId, [FromQuery] DateTime since, [FromQuery] int limit = 20)
         {

@@ -38,38 +38,40 @@ public class ChatHub : Hub
         {
             // Chuyển đổi messageData thành đối tượng có thể truy cập
             var message = JObject.FromObject(messageData);
-        
+    
             _logger.LogInformation($"Received message data: {message}");
-        
+    
             // Kiểm tra xem messageData có phải là đối tượng không
             if (message.Type != JTokenType.Object)
             {
                 _logger.LogError($"Invalid message data: not an object. Type: {message.Type}");
                 return;
             }
-        
+    
             string senderId = message["senderId"]?.ToString();
             string receiverId = message["receiverId"]?.ToString();
             string content = message["content"]?.ToString();
-        
+            string type = message["type"]?.ToString() ?? "text";
+            string imageUrl = message["imageUrl"]?.ToString();
+    
             if (string.IsNullOrEmpty(senderId) || string.IsNullOrEmpty(receiverId))
             {
                 _logger.LogError($"SendMessage: senderId or receiverId is null or empty. Message data: {message}");
                 return;
             }
-        
+    
             if (string.IsNullOrEmpty(content))
             {
                 _logger.LogError($"SendMessage: content is null or empty. Message data: {message}");
                 return;
             }
-        
-            _logger.LogInformation($"Sending message from {senderId} to {receiverId}: {content}");
-        
+    
+            _logger.LogInformation($"Sending message from {senderId} to {receiverId}: {content}, Type: {type}");
+    
             // Gửi tin nhắn đến người nhận
             await Clients.Group(receiverId).SendAsync("ReceiveMessage", messageData);
             _logger.LogInformation($"Message sent to receiver group: {receiverId}");
-        
+    
             // Gửi tin nhắn đến người gửi (để đồng bộ trên tất cả thiết bị)
             await Clients.Group(senderId).SendAsync("ReceiveMessage", messageData);
             _logger.LogInformation($"Message sent to sender group: {senderId}");
