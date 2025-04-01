@@ -1,9 +1,11 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using vjp_api.Models;
 using Microsoft.EntityFrameworkCore;
-using System.Threading.Tasks;
-using System.Linq;
+using Microsoft.AspNetCore.SignalR;
+using vjp_api.Controllers;
 using vjp_api.Data;
+
 
 namespace vjp_api.Controllers
 {
@@ -12,10 +14,17 @@ namespace vjp_api.Controllers
     public class GroupChatController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
-
-        public GroupChatController(ApplicationDbContext context)
+        private readonly IHubContext<ChatHub> _hubContext;
+        private readonly ILogger<GroupChatController> _logger;
+        
+        public GroupChatController(
+            ApplicationDbContext context,
+            IHubContext<ChatHub> hubContext,
+            ILogger<GroupChatController> logger)
         {
             _context = context;
+            _hubContext = hubContext;
+            _logger = logger;
         }
 
         [HttpGet]
@@ -118,31 +127,107 @@ namespace vjp_api.Controllers
 
         // Gửi tin nhắn vào nhóm
         [HttpPost("send")]
-        public async Task<IActionResult> SendGroupMessage([FromBody] GroupMessage message)
+        public async Task<IActionResult> SendGroupMessage([FromBody] SendGroupMessageDto dto)
         {
-            // Kiểm tra người dùng có trong nhóm không
-            var userInGroup = await _context.UserGroups
-                .AnyAsync(ug => ug.GroupChatId == message.GroupChatId && 
-                               ug.UserId == User.Identity.Name);
-                               
-            if (!userInGroup)
-                return Forbid("Bạn không phải thành viên của nhóm này");
+            try
+            {
+                var userId = User.Identity.Name;
 
-            _context.GroupMessages.Add(message);
-            await _context.SaveChangesAsync();
-            return Ok(new { message = "Gửi tin nhắn nhóm thành công!" });
+                // Kiểm tra người dùng có trong nhóm không
+                var userInGroup = await _context.UserGroups
+                    .AnyAsync(ug => ug.GroupChatId == dto.GroupChatId && 
+                                   ug.UserId == userId);
+                                   
+                if (!userInGroup)
+                    return Forbid("Bạn không phải thành viên của nhóm này");
+
+                // Xác định loại tin nhắn (text hoặc image)
+                string type = dto.Type ?? "text";
+                string? imageUrl = dto.ImageUrl;
+                string content = dto.Content;
+                
+                // Kiểm tra nếu nội dung là base64 image
+                if (content.StartsWith("data:image"))
+                {
+                    type = "image";
+                    imageUrl = content;
+                    content = "[Hình ảnh]"; // Đặt nội dung mặc định cho tin nhắn hình ảnh
+                }
+
+                // Create new GroupMessage with user ID from auth token
+                var message = new GroupMessage
+                {
+                    SenderId = userId,
+                    GroupChatId = dto.GroupChatId,
+                    Content = content,
+                    SentAt = DateTime.Now,
+                    Type = type,
+                    ImageUrl = imageUrl
+                };
+                
+                _context.GroupMessages.Add(message);
+                await _context.SaveChangesAsync();
+                
+                // Tạo đối tượng để gửi qua SignalR
+                var messageToSend = new
+                {
+                    id = message.Id,
+                    senderId = message.SenderId,
+                    groupId = message.GroupChatId,
+                    content = message.Content,
+                    sentAt = message.SentAt,
+                    type = message.Type,
+                    imageUrl = message.ImageUrl
+                };
+                
+                // Lấy tất cả thành viên trong nhóm
+                var groupMembers = await _context.UserGroups
+                    .Where(ug => ug.GroupChatId == dto.GroupChatId)
+                    .Select(ug => ug.UserId)
+                    .ToListAsync();
+
+                // Gửi tin nhắn tới tất cả thành viên
+                foreach (var memberId in groupMembers)
+                {
+                    await _hubContext.Clients.Group(memberId).SendAsync("ReceiveGroupMessage", messageToSend);
+                }
+                
+                return Ok(new { 
+                    message = "Gửi tin nhắn nhóm thành công!", 
+                    id = message.Id,
+                    sentAt = message.SentAt
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error sending group message: {ex.Message}");
+                return StatusCode(500, $"Internal server error: {ex.Message}");
+            }
         }
 
         // Lấy tin nhắn của nhóm
         [HttpGet("messages/{groupId}")]
-        public async Task<IActionResult> GetGroupMessages(int groupId)
+        public async Task<IActionResult> GetGroupMessages(int groupId, int page = 1, int pageSize = 20)
         {
             var messages = await _context.GroupMessages
                 .Where(m => m.GroupChatId == groupId)
-                .OrderBy(m => m.SentAt)
+                .OrderByDescending(m => m.SentAt)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
                 .ToListAsync();
 
-            return Ok(messages);
+            // Lấy tổng số tin nhắn để tính toán phân trang
+            var totalMessages = await _context.GroupMessages
+                .Where(m => m.GroupChatId == groupId)
+                .CountAsync();
+
+            return Ok(new {
+                messages = messages,
+                total = totalMessages,
+                page = page,
+                pageSize = pageSize,
+                hasMore = totalMessages > page * pageSize
+            });
         }
     }
 }
@@ -151,4 +236,17 @@ public class CreateGroupRequest
     public string Name { get; set; }
     public string? Avatar { get; set; }
     public List<string> MemberIds { get; set; }
+}
+
+public class SendGroupMessageDto
+{
+    [Required]
+    public int GroupChatId { get; set; }
+    
+    [Required]
+    public string Content { get; set; }
+    
+    public string? ImageUrl { get; set; }
+    
+    public string? Type { get; set; }
 }
