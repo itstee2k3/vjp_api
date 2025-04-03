@@ -2,26 +2,44 @@
 
 using System.Security.Claims;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json.Linq;
+using vjp_api.Data;
 
 public class ChatHub : Hub
 {
     private readonly ILogger<ChatHub> _logger;
-    
-    public ChatHub(ILogger<ChatHub> logger)
+    private readonly ApplicationDbContext _context;
+
+    public ChatHub(ApplicationDbContext context, ILogger<ChatHub> logger)
     {
+        _context = context;
         _logger = logger;
     }
     
     public override async Task OnConnectedAsync()
     {
-        var userId = Context.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        var userId = Context.User.Identity.Name;
         if (!string.IsNullOrEmpty(userId))
         {
+            // Thêm user vào group riêng để nhận tin nhắn cá nhân
             await Groups.AddToGroupAsync(Context.ConnectionId, userId);
             _logger.LogInformation($"User {userId} connected with connection ID {Context.ConnectionId}");
+
+            // Đăng ký user vào các nhóm chat mà họ là thành viên
+            var userGroups = await _context.UserGroups
+                .Where(ug => ug.UserId == userId)
+                .Select(ug => ug.GroupChatId)
+                .ToListAsync();
+
+            foreach (var groupId in userGroups)
+            {
+                var groupName = $"group_{groupId}";
+                await Groups.AddToGroupAsync(Context.ConnectionId, groupName);
+                _logger.LogInformation($"User {userId} added to group {groupName}");
+            }
         }
-        
+
         await base.OnConnectedAsync();
     }
     
@@ -85,7 +103,25 @@ public class ChatHub : Hub
     
     public override async Task OnDisconnectedAsync(Exception exception)
     {
-        _logger.LogInformation($"Client disconnected: {Context.ConnectionId}");
+        var userId = Context.User.Identity.Name;
+        if (!string.IsNullOrEmpty(userId))
+        {
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, userId);
+            _logger.LogInformation($"User {userId} disconnected");
+
+            // Loại bỏ khỏi tất cả nhóm chat
+            var userGroups = await _context.UserGroups
+                .Where(ug => ug.UserId == userId)
+                .Select(ug => ug.GroupChatId)
+                .ToListAsync();
+
+            foreach (var groupId in userGroups)
+            {
+                var groupName = $"group_{groupId}";
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupName);
+            }
+        }
+
         await base.OnDisconnectedAsync(exception);
     }
     
@@ -108,5 +144,28 @@ public class ChatHub : Hub
         {
             _logger.LogError($"Error sending typing status: {ex.Message}");
         }
+    }
+    
+    // Phương thức cho client gọi để gửi tin nhắn vào nhóm
+    public async Task SendMessageToGroup(int groupId, string message)
+    {
+        var userId = Context.User.Identity.Name;
+        if (string.IsNullOrEmpty(userId)) return;
+
+        // Kiểm tra xem người dùng có phải là thành viên của nhóm không
+        var isMember = await _context.UserGroups
+            .AnyAsync(ug => ug.GroupChatId == groupId && ug.UserId == userId);
+
+        if (!isMember) return;
+
+        // Gửi tin nhắn đến tất cả người trong nhóm
+        string groupName = $"group_{groupId}";
+        await Clients.Group(groupName).SendAsync("ReceiveGroupMessage", new
+        {
+            senderId = userId,
+            groupId = groupId,
+            content = message,
+            sentAt = DateTime.Now
+        });
     }
 }

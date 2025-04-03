@@ -180,17 +180,10 @@ namespace vjp_api.Controllers
                     imageUrl = message.ImageUrl
                 };
                 
-                // Lấy tất cả thành viên trong nhóm
-                var groupMembers = await _context.UserGroups
-                    .Where(ug => ug.GroupChatId == dto.GroupChatId)
-                    .Select(ug => ug.UserId)
-                    .ToListAsync();
-
-                // Gửi tin nhắn tới tất cả thành viên
-                foreach (var memberId in groupMembers)
-                {
-                    await _hubContext.Clients.Group(memberId).SendAsync("ReceiveGroupMessage", messageToSend);
-                }
+                
+                string groupSignalRName = $"group_{dto.GroupChatId}";
+                await _hubContext.Clients.Group(groupSignalRName)
+                    .SendAsync("ReceiveGroupMessage", messageToSend);
                 
                 return Ok(new { 
                     message = "Gửi tin nhắn nhóm thành công!", 
@@ -215,19 +208,8 @@ namespace vjp_api.Controllers
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
-
-            // Lấy tổng số tin nhắn để tính toán phân trang
-            var totalMessages = await _context.GroupMessages
-                .Where(m => m.GroupChatId == groupId)
-                .CountAsync();
-
-            return Ok(new {
-                messages = messages,
-                total = totalMessages,
-                page = page,
-                pageSize = pageSize,
-                hasMore = totalMessages > page * pageSize
-            });
+            
+            return Ok(messages);
         }
     }
 }
