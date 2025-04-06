@@ -123,17 +123,29 @@ namespace vjp_api.Controllers
         {
             var userIdCurrent = User.Identity.Name;
 
-            var messages = await _context.ChatMessages
+            var query = _context.ChatMessages
                 .Where(m => (m.SenderId == userIdCurrent && m.ReceiverId == userId) ||
                             (m.SenderId == userId && m.ReceiverId == userIdCurrent))
-                .OrderByDescending(m => m.SentAt)
+                .OrderByDescending(m => m.SentAt);
+
+            var totalCount = await query.CountAsync();
+    
+            var messages = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
 
-            return Ok(messages);
-        }
+            var hasMore = (page * pageSize) < totalCount;
 
+            return Ok(new
+            {
+                data = messages,
+                hasMore = hasMore,
+                currentPage = page,
+                pageSize = pageSize
+            });
+        }
+        
         [HttpPost("mark-as-read/{messageId}")]
         public async Task<IActionResult> MarkAsRead(int messageId)
         {

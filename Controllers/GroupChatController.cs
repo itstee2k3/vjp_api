@@ -202,14 +202,26 @@ namespace vjp_api.Controllers
         [HttpGet("messages/{groupId}")]
         public async Task<IActionResult> GetGroupMessages(int groupId, int page = 1, int pageSize = 20)
         {
-            var messages = await _context.GroupMessages
+            var query = _context.GroupMessages
                 .Where(m => m.GroupChatId == groupId)
-                .OrderByDescending(m => m.SentAt)
+                .OrderByDescending(m => m.SentAt);
+
+            var totalCount = await query.CountAsync();
+
+            var messages = await query
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
                 .ToListAsync();
-            
-            return Ok(messages);
+
+            var hasMore = (page * pageSize) < totalCount;
+
+            return Ok(new
+            {
+                data = messages,
+                hasMore = hasMore,
+                currentPage = page,
+                pageSize = pageSize
+            });
         }
     }
 }
