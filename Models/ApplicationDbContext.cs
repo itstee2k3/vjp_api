@@ -16,6 +16,8 @@ namespace vjp_api.Data
 
         public DbSet<RefreshToken> RefreshTokens { get; set; }
 
+        public DbSet<Friendship> Friendships { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
@@ -32,6 +34,24 @@ namespace vjp_api.Data
                 .WithMany(u => u.ChatMessagesReceived)
                 .HasForeignKey(m => m.ReceiverId)
                 .OnDelete(DeleteBehavior.Restrict);
+            
+            // Đảm bảo một cặp UserRequesterId và UserReceiverId là duy nhất
+            modelBuilder.Entity<Friendship>()
+                .HasIndex(f => new { f.UserRequesterId, f.UserReceiverId })
+                .IsUnique();
+
+            // Cấu hình quan hệ với ApplicationUser
+            modelBuilder.Entity<Friendship>()
+                .HasOne(f => f.Requester)
+                .WithMany() // Hoặc WithMany(u => u.SentFriendRequests) nếu bạn thêm collection vào ApplicationUser
+                .HasForeignKey(f => f.UserRequesterId)
+                .OnDelete(DeleteBehavior.Restrict); // Hoặc Cascade tùy logic
+
+            modelBuilder.Entity<Friendship>()
+                .HasOne(f => f.Receiver)
+                .WithMany() // Hoặc WithMany(u => u.ReceivedFriendRequests)
+                .HasForeignKey(f => f.UserReceiverId)
+                .OnDelete(DeleteBehavior.Restrict); // Hoặc Cascade tùy logic
         }
     }
 } 
