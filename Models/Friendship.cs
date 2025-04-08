@@ -20,10 +20,10 @@ public class Friendship
     public DateTime RequestedAt { get; set; }
     public DateTime? RespondedAt { get; set; }
 
-    [ForeignKey("RequesterId")]
+    [ForeignKey(nameof(UserRequesterId))]
     public virtual User? Requester { get; set; }
 
-    [ForeignKey("ReceiverId")]
+    [ForeignKey(nameof(UserReceiverId))]
     public virtual User? Receiver { get; set; }
 }
 

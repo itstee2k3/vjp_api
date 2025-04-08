@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
 
-[Authorize]
+// [Authorize]
 [ApiController]
 [Route("api/friendships")]
 public class FriendshipsController : ControllerBase
@@ -24,7 +24,7 @@ public class FriendshipsController : ControllerBase
         _hubContext = hubContext;
     }
 
-    private string GetUserId() => User.FindFirstValue(ClaimTypes.NameIdentifier);
+    private string GetUserId() => User.Identity?.Name;
 
     [HttpPost("request")]
     public async Task<IActionResult> SendRequest([FromBody] SendFriendRequestDto dto)
@@ -65,10 +65,6 @@ public class FriendshipsController : ControllerBase
                      return BadRequest("This user has already sent you a friend request. Please accept or reject it.");
                 }
             }
-             // If Rejected or Blocked, potentially allow sending a new request depending on logic
-             // For now, let's treat any existing record (other than accepted/pending) as preventing a new request
-             // Or simply remove rejected/cancelled requests? Let's assume removing for now.
-             // If the existing status requires specific handling (e.g. was rejected), add logic here.
         }
 
 
@@ -198,24 +194,7 @@ public class FriendshipsController : ControllerBase
 
         return Ok(new { message = message });
     }
-
-     // Hoặc dùng DELETE
-    [HttpDelete("{friendshipId}")]
-    public async Task<IActionResult> DeleteFriendship(int friendshipId)
-    {
-        var userId = GetUserId();
-        var result = await _context.Friendships
-            .FirstOrDefaultAsync(f => f.Id == friendshipId && f.UserReceiverId == userId);
-         if (result == null) return NotFound("Friendship not found.");
-        if (result.Status != FriendshipStatus.Accepted) return BadRequest("Friendship status is not accepted.");
-
-        _context.Friendships.Remove(result);
-        await _context.SaveChangesAsync();
-
-        // TODO: Optionally send a notification via SignalR
-
-        return NoContent(); // 204 No Content là phù hợp cho DELETE thành công
-    }
+    
 
     [HttpGet("friends")]
     public async Task<ActionResult<IEnumerable<FriendDto>>> GetFriends()
@@ -263,5 +242,77 @@ public class FriendshipsController : ControllerBase
         await _hubContext.Clients.Group(friendId).SendAsync("ReceiveFriendNotification", notificationData);
 
         return NoContent(); // 204 No Content is appropriate for successful DELETE
+    }
+    
+    [HttpGet("search")] // Route mới: /api/friendships/search (hoặc /api/users/search nếu trong UsersController)
+    public async Task<ActionResult<IEnumerable<UserSearchResultDto>>> SearchUsers([FromQuery] string query)
+    {
+        var currentUserId = GetUserId();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return Ok(new List<UserSearchResultDto>()); // Trả về danh sách rỗng nếu query trống
+        }
+        
+        // --- Bước 1: Tìm người dùng phù hợp ---
+        var foundUsers = await _context.Users
+            .Where(u => u.Id != currentUserId &&
+                        (EF.Functions.Like(u.FullName, $"%{query}%") || EF.Functions.Like(u.Email, $"%{query}%")))
+            .Select(u => new // Chọn tạm thời thông tin cơ bản
+            {
+                u.Id,
+                u.FullName,
+                u.Email,
+                u.Avatar // Đảm bảo tên thuộc tính Avatar đúng
+            })
+            .Take(20)
+            .ToListAsync();
+
+        // Nếu không tìm thấy ai, trả về luôn
+        if (!foundUsers.Any())
+        {
+            return Ok(new List<UserSearchResultDto>());
+        }
+
+        var foundUserIds = foundUsers.Select(u => u.Id).ToList();
+
+        // --- Bước 2: Tìm các bản ghi Friendship liên quan ---
+        var relatedFriendships = await _context.Friendships
+            .Where(f => (f.UserRequesterId == currentUserId && foundUserIds.Contains(f.UserReceiverId)) ||
+                        (foundUserIds.Contains(f.UserRequesterId) && f.UserReceiverId == currentUserId))
+            .Select(f => new // Chọn các thông tin cần thiết
+            {
+                f.UserRequesterId,
+                f.UserReceiverId,
+                f.Status
+            })
+            .ToListAsync();
+
+        // --- Bước 3: Kết hợp kết quả ---
+        var results = foundUsers.Select(u =>
+        {
+            // Tìm friendship tương ứng cho user 'u'
+            var friendship = relatedFriendships.FirstOrDefault(f =>
+                (f.UserRequesterId == currentUserId && f.UserReceiverId == u.Id) ||
+                (f.UserRequesterId == u.Id && f.UserReceiverId == currentUserId));
+
+            FriendshipStatus? status = friendship?.Status;
+            bool? isSentByCurrentUser = null;
+            if (status == FriendshipStatus.Pending)
+            {
+                isSentByCurrentUser = friendship?.UserRequesterId == currentUserId;
+            }
+
+            return new UserSearchResultDto
+            {
+                Id = u.Id,
+                FullName = u.FullName, // Lấy từ foundUsers
+                Email = u.Email,       // Lấy từ foundUsers
+                AvatarUrl = u.Avatar,  // Lấy từ foundUsers (đảm bảo tên thuộc tính Avatar đúng)
+                FriendshipStatus = status, // Status từ relatedFriendships (có thể null)
+                IsRequestSentByCurrentUser = isSentByCurrentUser // Tính toán dựa trên friendship
+            };
+        }).ToList();
+
+        return Ok(results);
     }
 }
