@@ -213,18 +213,6 @@ namespace vjp_api.Controllers
                     imageUrl = message.ImageUrl
                 };
 
-                // // Lấy tất cả thành viên trong nhóm
-                // var groupMembers = await _context.UserGroups
-                //     .Where(ug => ug.GroupChatId == dto.GroupId)
-                //     .Select(ug => ug.UserId)
-                //     .ToListAsync();
-                //
-                // // Gửi tin nhắn tới tất cả thành viên
-                // foreach (var memberId in groupMembers)
-                // {
-                //     await _hubContext.Clients.Group(memberId).SendAsync("ReceiveGroupMessage", messageToSend);
-                // }
-
                 // Gửi tin nhắn qua SignalR đến nhóm
                 string groupSignalRName = $"group_{dto.GroupId}";
                 await _hubContext.Clients.Group(groupSignalRName)

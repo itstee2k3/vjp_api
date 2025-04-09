@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using vjp_api.Models;
 using Microsoft.EntityFrameworkCore;
@@ -11,20 +12,24 @@ namespace vjp_api.Controllers
 {
     [Route("api/group")]
     [ApiController]
+    [Authorize] 
     public class GroupChatController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
         private readonly IHubContext<ChatHub> _hubContext;
         private readonly ILogger<GroupChatController> _logger;
+        private readonly IWebHostEnvironment _environment;
         
         public GroupChatController(
             ApplicationDbContext context,
             IHubContext<ChatHub> hubContext,
-            ILogger<GroupChatController> logger)
+            ILogger<GroupChatController> logger,
+            IWebHostEnvironment webHostEnvironment)
         {
             _context = context;
             _hubContext = hubContext;
             _logger = logger;
+            _environment = webHostEnvironment; // <<< Assign it here
         }
 
         [HttpGet]
@@ -223,6 +228,113 @@ namespace vjp_api.Controllers
                 pageSize = pageSize
             });
         }
+        
+        [HttpPost("{groupId}/avatar")]
+        public async Task<IActionResult> UploadGroupImage(int groupId, [FromForm] IFormFile file)
+        {
+            try
+            {
+                var userId = User.Identity?.Name;
+                if (string.IsNullOrEmpty(userId))
+                {
+                    return Unauthorized("User not authenticated");
+                }
+
+                // Kiểm tra quyền admin của người dùng trong nhóm
+                var userGroup = await _context.UserGroups
+                    .FirstOrDefaultAsync(ug => ug.GroupChatId == groupId && ug.UserId == userId);
+                
+                if (userGroup == null)
+                {
+                    return NotFound("You are not a member of this group.");
+                }
+
+                if (!userGroup.IsAdmin)
+                {
+                    return Forbid("Only group admins can change the group image.");
+                }
+
+                // Validate file
+                if (file == null || file.Length == 0)
+                {
+                    return BadRequest("No file uploaded");
+                }
+
+                if (file.Length > 5 * 1024 * 1024) // 5MB limit
+                {
+                    return BadRequest("File size exceeds limit (5MB)");
+                }
+
+                var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".gif" };
+                var extension = Path.GetExtension(file.FileName).ToLowerInvariant();
+                if (!allowedExtensions.Contains(extension))
+                {
+                    return BadRequest("Invalid file type. Only JPG, PNG, and GIF are allowed.");
+                }
+
+                // Create group_avatars directory if it doesn't exist
+                string uploadsFolder = Path.Combine(_environment.ContentRootPath, "uploads", "group_avatars");
+                if (!Directory.Exists(uploadsFolder))
+                {
+                    Directory.CreateDirectory(uploadsFolder);
+                }
+
+                // Generate unique filename with group ID prefix
+                string uniqueFileName = $"{groupId}_{Guid.NewGuid()}{extension}";
+                string filePath = Path.Combine(uploadsFolder, uniqueFileName);
+
+                // Save file
+                using (var fileStream = new FileStream(filePath, FileMode.Create))
+                {
+                    await file.CopyToAsync(fileStream);
+                }
+
+                // Update group avatar URL in database
+                var group = await _context.GroupChats.FindAsync(groupId);
+                if (group == null)
+                {
+                    // Clean up uploaded file if group not found
+                    System.IO.File.Delete(filePath);
+                    return NotFound("Group not found");
+                }
+
+                // Delete old avatar file if exists
+                if (!string.IsNullOrEmpty(group.Avatar))
+                {
+                    var oldFilePath = Path.Combine(_environment.ContentRootPath, 
+                        group.Avatar.TrimStart('/').Replace("/", Path.DirectorySeparatorChar.ToString()));
+                    if (System.IO.File.Exists(oldFilePath))
+                    {
+                        System.IO.File.Delete(oldFilePath);
+                    }
+                }
+
+                // Update avatar URL to point to group_avatars directory
+                string imageUrl = $"/uploads/group_avatars/{uniqueFileName}";
+                group.Avatar = imageUrl;
+                await _context.SaveChangesAsync();
+
+                // Send SignalR notification to all group members
+                string groupSignalRName = $"group_{groupId}";
+                await _hubContext.Clients.Group(groupSignalRName).SendAsync("GroupImageUpdated", new
+                {
+                    groupId = groupId,
+                    imageUrl = imageUrl,
+                    updatedBy = userId
+                });
+
+                return Ok(new { 
+                    message = "Group image updated successfully",
+                    imageUrl = imageUrl 
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Error uploading group image: {ex.Message}");
+                return StatusCode(500, $"Internal server error: {ex.Message}");
+            }
+        }
+
     }
 }
 public class CreateGroupRequest
