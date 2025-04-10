@@ -402,6 +402,47 @@ namespace vjp_api.Controllers
             }
         }
 
+        // NEW: Endpoint to search messages within a group
+        [HttpGet("search/{groupId}")]
+        public async Task<IActionResult> SearchGroupMessages(int groupId, [FromQuery] string query)
+        {
+            try
+            {
+                var userId = User.Identity?.Name;
+                if (string.IsNullOrEmpty(userId))
+                {
+                    return Unauthorized("User not authenticated");
+                }
+
+                // Validate query
+                if (string.IsNullOrWhiteSpace(query))
+                {
+                    return BadRequest("Search query cannot be empty.");
+                }
+
+                // Check if user is member of the group
+                var isMember = await _context.UserGroups
+                    .AnyAsync(ug => ug.GroupChatId == groupId && ug.UserId == userId);
+                if (!isMember)
+                {
+                    return Forbid("You are not a member of this group.");
+                }
+
+                // Perform the search (case-insensitive)
+                var results = await _context.GroupMessages
+                    .Where(m => m.GroupChatId == groupId &&
+                                m.Content.ToLower().Contains(query.ToLower()))
+                    .OrderByDescending(m => m.SentAt) // Or Relevance? Simple date order for now.
+                    .ToListAsync();
+
+                return Ok(results); // Return the list of matching messages
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error searching messages in group {groupId} for query '{query}'");
+                return StatusCode(500, "Internal server error while searching messages.");
+            }
+        }
     }
 }
 public class CreateGroupRequest
