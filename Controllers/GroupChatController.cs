@@ -334,6 +334,73 @@ namespace vjp_api.Controllers
                 return StatusCode(500, $"Internal server error: {ex.Message}");
             }
         }
+        
+        [HttpPut("{groupId}/name")]
+        public async Task<IActionResult> UpdateGroupName(int groupId, [FromBody] UpdateGroupNameRequest request)
+        {
+            try
+            {
+                var userId = User.Identity?.Name;
+                if (string.IsNullOrEmpty(userId))
+                {
+                    return Unauthorized("User not authenticated");
+                }
+
+                // Check if user is an admin of the group
+                var userGroup = await _context.UserGroups
+                    .FirstOrDefaultAsync(ug => ug.GroupChatId == groupId && ug.UserId == userId);
+
+                if (userGroup == null)
+                {
+                    return NotFound("You are not a member of this group.");
+                }
+
+                if (!userGroup.IsAdmin)
+                {
+                    return Forbid("Only group admins can change the group name.");
+                }
+
+                // Find the group
+                var group = await _context.GroupChats.FindAsync(groupId);
+                if (group == null)
+                {  
+                    return NotFound("Group not found");
+                }
+
+                // Validate the new name
+                if (string.IsNullOrWhiteSpace(request.Name))
+                {
+                    return BadRequest("Group name cannot be empty.");
+                }
+                
+                if (request.Name.Length > 100) // Example length limit
+                {
+                    return BadRequest("Group name is too long (max 100 characters).");
+                }
+
+                // Update the name
+                group.Name = request.Name.Trim();
+                await _context.SaveChangesAsync();
+
+                // Send SignalR notification to group members
+                string groupSignalRName = $"group_{groupId}";
+                await _hubContext.Clients.Group(groupSignalRName).SendAsync("GroupNameUpdated", new
+                {
+                    groupId = groupId,
+                    name = group.Name,
+                    updatedBy = userId
+                });
+                
+                _logger.LogInformation($"Group name updated successfully for groupId: {groupId} by user: {userId}");
+
+                return Ok(new { message = "Group name updated successfully", name = group.Name });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Error updating group name for groupId: {groupId}");
+                return StatusCode(500, "Internal server error while updating group name.");
+            }
+        }
 
     }
 }
@@ -356,3 +423,10 @@ public class SendGroupMessageDto
     
     public string? Type { get; set; }
 }
+
+public class UpdateGroupNameRequest
+{
+    [Required]
+    [MaxLength(100)]
+    public string Name { get; set; }
+} 
